@@ -29,6 +29,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// All error variants that can happen during communication.
 pub enum Error {
     #[error(transparent)]
+    ReqwestError(#[from] reqwest::Error),
+    #[error(transparent)]
     SerdeJsonError(#[from] SerdeError),
     #[error("The HTTP connection was not upgraded by the podman host")]
     ConnectionNotUpgraded,
@@ -48,9 +50,6 @@ pub enum Error {
     #[cfg(feature = "tls")]
     // #[error(transparent)]
     // ErrorStack(#[from] ErrorStack),
-
-    #[error(transparent)]
-    Reqwest(#[from] reqwest::Error),
     #[error(transparent)]
     Any(Box<dyn std::error::Error + 'static + Send + Sync>),
     

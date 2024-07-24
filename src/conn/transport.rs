@@ -49,6 +49,7 @@ impl Transport {
         match &self {
             Transport::Tcp { client, host } => client,
             Transport::Unix { client, path } => client,
+            #[cfg(feature = "tls")]
             Transport::EncryptedTcp { client, host } => client,
         }
     }
