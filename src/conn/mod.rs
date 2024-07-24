@@ -9,7 +9,6 @@ pub mod tty;
 pub use client::*;
 pub use headers::Headers;
 pub use payload::Payload;
-pub use payload::ReqwestBody;
 pub use transport::*;
 pub use tty::*;
 
@@ -48,7 +47,7 @@ pub enum Error {
     Http(#[from] hyper::http::Error),
     #[error(transparent)]
     Encoding(#[from] std::string::FromUtf8Error),
-    #[cfg(feature = "tls")]
+    // #[cfg(feature = "tls")]
     // #[error(transparent)]
     // ErrorStack(#[from] ErrorStack),
     #[error(transparent)]

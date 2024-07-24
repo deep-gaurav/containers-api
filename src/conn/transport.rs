@@ -71,7 +71,7 @@ impl Transport {
                 format!("{host}{ep}").parse().map_err(Error::InvalidUri)
             }
             #[cfg(unix)]
-            Transport::Unix { path, .. } => Ok(DomainUri::new(path, ep).into()),
+            Transport::Unix { path, .. } => Ok(format!("http://docker.sock:0{ep}").parse().unwrap()),
         }
     }
 
