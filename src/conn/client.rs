@@ -7,7 +7,8 @@ use futures_util::{
     stream::Stream,
     TryFutureExt, TryStreamExt,
 };
-use hyper::{body::Bytes, header, Body, Method, Request, Response, StatusCode};
+use hyper::{body::Bytes, header,  Method,  StatusCode};
+use reqwest::{Request,Response, Body};
 use log::trace;
 use serde::de::DeserializeOwned;
 use std::future::Future;
@@ -21,7 +22,7 @@ pub struct RequestClient<E> {
 }
 
 pub type ValidateResponseFn<E> =
-    fn(Response<Body>) -> Pin<Box<dyn Future<Output = Result<Response<Body>, E>> + Send + Sync>>;
+    fn(Response) -> Pin<Box<dyn Future<Output = Result<Response, E>> + Send + Sync>>;
 
 impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
     /// Creates a new RequestClient with a specified transport and a function to validate
@@ -40,15 +41,15 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
         endpoint: &str,
         body: Payload<B>,
         headers: Option<Headers>,
-    ) -> conn::Result<Request<Body>>
+    ) -> conn::Result<Request>
     where
         B: Into<Body>,
     {
         let uri = self.transport.make_uri(endpoint)?;
-        build_request(method, uri, body, headers)
+        build_request(self.transport.get_client() ,method, uri, body, headers)
     }
 
-    async fn send_request(&self, request: Request<Body>) -> Result<Response<Body>, E> {
+    async fn send_request(&self, request: Request) -> Result<Response, E> {
         let response = self.transport.request(request).await.map_err(E::from)?;
         (self.validate_fn)(response).await
     }
@@ -58,7 +59,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
     //####################################################################################################
 
     /// Make a GET request to the `endpoint` and return the response.
-    pub async fn get(&self, endpoint: impl AsRef<str>) -> Result<Response<Body>, E> {
+    pub async fn get(&self, endpoint: impl AsRef<str>) -> Result<Response, E> {
         let req = self.make_request(
             Method::GET,
             endpoint.as_ref(),
@@ -129,7 +130,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
         endpoint: impl AsRef<str>,
         body: Payload<B>,
         headers: Option<Headers>,
-    ) -> Result<Response<Body>, E>
+    ) -> Result<Response, E>
     where
         B: Into<Body>,
     {
@@ -275,7 +276,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
         &self,
         endpoint: impl AsRef<str>,
         body: Payload<B>,
-    ) -> Result<Response<Body>, E>
+    ) -> Result<Response, E>
     where
         B: Into<Body>,
     {
@@ -301,7 +302,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
     //####################################################################################################
 
     /// Make a DELETE request to the `endpoint` and return the response.
-    pub async fn delete(&self, endpoint: impl AsRef<str>) -> Result<Response<Body>, E> {
+    pub async fn delete(&self, endpoint: impl AsRef<str>) -> Result<Response, E> {
         let req = self.make_request(
             Method::DELETE,
             endpoint.as_ref(),
@@ -333,7 +334,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
     //####################################################################################################
 
     /// Make a HEAD request to the `endpoint` and return the response.
-    pub async fn head(&self, endpoint: impl AsRef<str>) -> Result<Response<Body>, E> {
+    pub async fn head(&self, endpoint: impl AsRef<str>) -> Result<Response, E> {
         let req = self.make_request(
             Method::HEAD,
             endpoint.as_ref(),
@@ -368,7 +369,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
         method: Method,
         endpoint: &str,
         body: Payload<B>,
-    ) -> Result<hyper::upgrade::Upgraded, E>
+    ) -> Result<reqwest::Upgraded, E>
     where
         B: Into<Body>,
     {
@@ -380,7 +381,7 @@ impl<E: From<conn::Error> + From<serde_json::Error>> RequestClient<E> {
 
         let response = self.send_request(req?).await?;
         match response.status() {
-            StatusCode::SWITCHING_PROTOCOLS => Ok(hyper::upgrade::on(response)
+            StatusCode::SWITCHING_PROTOCOLS => Ok(response.upgrade()
                 .await
                 .map_err(conn::Error::from)?),
             _ => Err(E::from(conn::Error::ConnectionNotUpgraded)),

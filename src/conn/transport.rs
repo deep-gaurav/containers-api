@@ -4,15 +4,14 @@ use crate::conn::{Error, Headers, Payload, Result};
 
 use futures_util::{
     stream::{self, Stream},
-    StreamExt,
+    StreamExt, TryStreamExt,
 };
 use hyper::{
     body::Bytes,
-    client::{Client, HttpConnector},
-    header, Body, Method, Request, Response,
+    header, Method,
 };
-#[cfg(feature = "tls")]
-use hyper_openssl::HttpsConnector;
+use reqwest::{Body, Client, Request, Response};
+
 #[cfg(unix)]
 use hyperlocal::UnixConnector;
 #[cfg(unix)]
@@ -26,25 +25,33 @@ use std::{iter::IntoIterator, path::PathBuf};
 pub enum Transport {
     /// A network tcp interface
     Tcp {
-        client: Client<HttpConnector>,
+        client: reqwest::Client,
         host: Url,
     },
     /// TCP/TLS
     #[cfg(feature = "tls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
     EncryptedTcp {
-        client: Client<HttpsConnector<HttpConnector>>,
+        client: reqwest::Client,
         host: Url,
     },
     /// A Unix domain socket
     #[cfg(unix)]
     Unix {
-        client: Client<UnixConnector>,
+        client: reqwest::Client,
         path: PathBuf,
     },
 }
 
 impl Transport {
+
+    pub fn get_client(&self) -> &Client {
+        match &self {
+            Transport::Tcp { client, host } => client,
+            Transport::Unix { client, path } => client,
+            Transport::EncryptedTcp { client, host } => client,
+        }
+    }
     pub fn remote_addr(&self) -> &str {
         match &self {
             Self::Tcp { ref host, .. } => host.as_ref(),
@@ -68,42 +75,43 @@ impl Transport {
     }
 
     /// Send the given request and return a Future of the response.
-    pub async fn request(&self, req: Request<Body>) -> Result<Response<Body>> {
-        log::trace!("sending request {} {}", req.method(), req.uri());
+    pub async fn request(&self, req: Request) -> Result<Response> {
+        log::trace!("sending request {} {}", req.method(), req.url());
         match self {
-            Transport::Tcp { ref client, .. } => client.request(req),
+            Transport::Tcp { ref client, .. } => client.execute(req),
             #[cfg(feature = "tls")]
-            Transport::EncryptedTcp { ref client, .. } => client.request(req),
+            Transport::EncryptedTcp { ref client, .. } => client.execute(req),
             #[cfg(unix)]
-            Transport::Unix { ref client, .. } => client.request(req),
+            Transport::Unix { ref client, .. } => client.execute(req),
         }
         .await
         .map_err(Error::from)
     }
 
-    pub async fn request_string(&self, req: Request<Body>) -> Result<String> {
-        let body = self.request(req).await.map(|resp| resp.into_body())?;
+    pub async fn request_string(&self, req: Request) -> Result<String> {
+        let body = self.request(req).await?;
         body_to_string(body).await
     }
 }
 
-pub(crate) async fn body_to_string(body: Body) -> Result<String> {
-    let bytes = hyper::body::to_bytes(body).await?;
+pub(crate) async fn body_to_string(body: Response) -> Result<String> {
+    let bytes = body.bytes().await?;
     String::from_utf8(bytes.to_vec()).map_err(Error::from)
 }
 
 /// Builds an HTTP request.
 pub(crate) fn build_request<B>(
+    client: &reqwest::Client,
     method: Method,
     uri: hyper::Uri,
     body: Payload<B>,
     headers: Option<Headers>,
-) -> Result<Request<Body>>
+) -> Result<Request>
 where
     B: Into<Body>,
 {
-    let builder = hyper::http::request::Builder::new();
-    let req = builder.method(method).uri(&uri);
+    let req = client.request(method, uri.to_string());
+    // let req = builder.method(method).uri(&uri);
     let mut req = req.header(header::HOST, "");
 
     if let Some(h) = headers {
@@ -114,7 +122,7 @@ where
 
     // early return
     if body.is_none() {
-        return Ok(req.body(Body::empty())?);
+        return Ok(req.build()?);
     }
 
     let mime = body.mime_type();
@@ -124,53 +132,66 @@ where
 
     // it's ok to unwrap, we check that the body is not none
     req.body(body.into_inner().unwrap().into())
+        .build()
         .map_err(Error::from)
 }
 
-pub(crate) async fn get_response_string(response: Response<Body>) -> Result<String> {
-    body_to_string(response.into_body()).await
+pub(crate) async fn get_response_string(response: Response) -> Result<String> {
+    body_to_string(response).await
 }
 
-pub(crate) fn stream_response(response: Response<Body>) -> impl Stream<Item = Result<Bytes>> {
-    stream_body(response.into_body())
+pub(crate) fn stream_response(response: Response) -> impl Stream<Item = Result<Bytes>> {
+    stream_body(response)
 }
 
-pub(crate) fn stream_json_response(response: Response<Body>) -> impl Stream<Item = Result<Bytes>> {
-    stream_json_body(response.into_body())
+pub(crate) fn stream_json_response(response: Response) -> impl Stream<Item = Result<Bytes>> {
+    stream_json_body(response)
 }
 
-fn stream_body(body: Body) -> impl Stream<Item = Result<Bytes>> {
-    async fn unfold(mut body: Body) -> Option<(Result<Bytes>, Body)> {
-        body.next()
-            .await
-            .map(|chunk| (chunk.map_err(Error::from), body))
-    }
-
-    stream::unfold(body, unfold)
+fn stream_body(body: Response) -> impl Stream<Item = Result<Bytes>> {
+    body.bytes_stream().map_err(Error::from)
 }
 
 static JSON_WHITESPACE: &[u8] = b"\r\n";
 
-fn stream_json_body(body: Body) -> impl Stream<Item = Result<Bytes>> {
-    async fn unfold(mut body: Body) -> Option<(Result<Bytes>, Body)> {
+fn stream_json_body(body: Response) -> impl Stream<Item = Result<Bytes>> {
+    async fn unfold(mut body: Response) -> Option<(Result<Bytes>, Response)> {
         let mut chunk = Vec::new();
-        while let Some(chnk) = body.next().await {
+
+        loop {
+            let chnk = body.chunk().await;
             match chnk {
-                Ok(chnk) => {
+                Ok(Some(chnk)) => {
                     chunk.extend(chnk.to_vec());
                     if chnk.ends_with(JSON_WHITESPACE) {
                         break;
                     }
                 }
-                Err(e) => {
+                Ok(None) => {
+                    return None;
+                }
+                Err(e)=> {
                     return Some((Err(Error::from(e)), body));
                 }
             }
         }
+        // while let Some(chnk) = body.chunk().await {
+        //     match chnk {
+        //         Ok(chnk) => {
+        //             chunk.extend(chnk.to_vec());
+        //             if chnk.ends_with(JSON_WHITESPACE) {
+        //                 break;
+        //             }
+        //         }
+        //         Err(e) => {
+        //             return Some((Err(Error::from(e)), body));
+        //         }
+        //     }
+        // }
 
-        if chunk.is_empty() {
-            return None;
-        }
+        // if chunk.is_empty() {
+        //     return None;
+        // }
 
         Some((Ok(Bytes::from(chunk)), body))
     }

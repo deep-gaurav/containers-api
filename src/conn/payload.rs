@@ -1,4 +1,4 @@
-use hyper::Body;
+use reqwest::Body;
 
 /// Types of payload that can be sent
 pub enum Payload<B: Into<Body>> {
