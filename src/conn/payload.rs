@@ -10,7 +10,7 @@ pub enum Payload<B: Into<Body>> {
 }
 
 
-pub struct ReqwestBody(reqwest::Body);
+pub struct ReqwestBody(pub reqwest::Body);
 
 impl Into<Body> for ReqwestBody{
     fn into(self) -> Body {
