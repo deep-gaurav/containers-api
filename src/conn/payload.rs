@@ -9,6 +9,15 @@ pub enum Payload<B: Into<Body>> {
     Tar(B),
 }
 
+
+pub struct ReqwestBody(reqwest::Body);
+
+impl Into<Body> for ReqwestBody{
+    fn into(self) -> Body {
+        self.0
+    }
+}
+
 impl Payload<Body> {
     /// Creates an empty payload
     pub fn empty() -> Self {
