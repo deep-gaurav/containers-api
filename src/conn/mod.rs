@@ -9,6 +9,7 @@ pub mod tty;
 pub use client::*;
 pub use headers::Headers;
 pub use payload::Payload;
+pub use payload::ReqwestBody;
 pub use transport::*;
 pub use tty::*;
 
